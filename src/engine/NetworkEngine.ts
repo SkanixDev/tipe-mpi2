@@ -27,6 +27,8 @@ export class NetworkEngine {
 
   packets: Packet[] = [];
   frameDurationMs: number = 16.67; // Hypothèse 60 FPS
+  currentFrame: number = 0; // Compteur de frames pour les timestamps
+  speedMultiplier: number = 0.3; // Ralentit la simulation pour mieux voir
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -192,6 +194,9 @@ export class NetworkEngine {
 
     Logger.debug("Frame render");
 
+    // Incrémenter le compteur de frames
+    this.currentFrame++;
+
     // 0. Mettre à jour la simulation (avant le rendu)
     this.updatePackets();
 
@@ -276,6 +281,41 @@ export class NetworkEngine {
     Logger.debug(`Packet ajouté: ${packet.id}`);
   }
 
+  // Permet d'ajuster la vitesse globale de simulation
+  setSimulationSpeed(multiplier: number) {
+    this.speedMultiplier = Math.max(0.05, Math.min(2, multiplier));
+    Logger.info(`Vitesse simulation: x${this.speedMultiplier.toFixed(2)}`);
+  }
+
+  // Retourne le nœud cliqué à partir des coordonnées écran // J AI FAIT PAR IA CAR PAS INTERESSANT
+  getNodeAtScreenPosition(
+    screenX: number,
+    screenY: number,
+  ): NetworkNode | null {
+    // Conversion écran -> monde (inverse de translate + scale)
+    const worldX = (screenX - this.cameraX) / this.zoom;
+    const worldY = (screenY - this.cameraY) / this.zoom;
+
+    let closestNode: NetworkNode | null = null;
+    let minDistanceSquared = Number.POSITIVE_INFINITY;
+    const hitRadius = 10; // tolérance de clic (en unités monde)
+
+    for (const node of this.nodes) {
+      const dx = node.x - worldX;
+      const dy = node.y - worldY;
+      const distanceSquared = dx * dx + dy * dy;
+
+      if (distanceSquared <= hitRadius * hitRadius) {
+        if (distanceSquared < minDistanceSquared) {
+          minDistanceSquared = distanceSquared;
+          closestNode = node;
+        }
+      }
+    }
+
+    return closestNode;
+  }
+
   // Helper pour créer une requête depuis un UserNode
   createRequestFromUser(
     userNode: UserNode,
@@ -337,12 +377,12 @@ export class NetworkEngine {
 
       // 2) Avancer le paquet sur le lien actuel
       if (packet.status === "TRANSIT") {
-        packet.progress += packet.speed;
+        packet.progress += packet.speed * this.speedMultiplier;
         Logger.debug(
           `Packet ${packet.id} progress=${packet.progress.toFixed(2)}`,
         );
 
-        // Fin de lien
+        // Fin de lien → Arrivée à un nœud
         if (packet.progress >= 1) {
           packet.currentStepIndex += 1;
           packet.progress = 0;
@@ -350,11 +390,69 @@ export class NetworkEngine {
             `Packet ${packet.id} avance au step ${packet.currentStepIndex}`,
           );
 
+          const currentNode = packet.path[packet.currentStepIndex];
+
+          // CACHE HIT/MISS
+          if (
+            packet.type === "REQUEST" &&
+            (currentNode instanceof CDNNode || currentNode instanceof FogNode)
+          ) {
+            if (currentNode.hasChunk(packet.videoId, packet.chunkIndex)) {
+              Logger.info(
+                `CACHE HIT sur ${currentNode.id} pour ${packet.videoId}_${packet.chunkIndex}`,
+              );
+
+              // Met à jour les stats d'accès
+              currentNode.onCacheHit(
+                packet.videoId,
+                packet.chunkIndex,
+                this.currentFrame,
+              );
+
+              // Génère la réponse immédiatement depuis ce noeud
+              const responsePacket = new Packet(
+                `RESP_${packet.id}`,
+                "RESPONSE",
+                currentNode,
+                packet.source,
+                packet.videoId,
+                packet.chunkIndex,
+              );
+              responsePacket.isLastChunk = packet.isLastChunk;
+              spawnedPackets.push(responsePacket);
+
+              // Paquet REQUEST stop ici (ne continue pas vers l'Origin)
+              packet.status = "DELIVERED";
+              packet.path = [currentNode];
+              packet.currentStepIndex = 0;
+              packet.target = currentNode;
+              // On ne garde pas ce paquet (il est terminé)
+              continue;
+            } else {
+              // CACHE MISS : continue vers le parent²
+              Logger.debug(`Cache MISS sur ${currentNode.id}`);
+            }
+          }
+
+          // Remplir le cache au passage des RESPONSE
+          if (
+            packet.type === "RESPONSE" &&
+            (currentNode instanceof CDNNode || currentNode instanceof FogNode)
+          ) {
+            Logger.debug(
+              `Le ${currentNode.id} stocke ${packet.videoId}_${packet.chunkIndex}`,
+            );
+            currentNode.storeChunk(
+              packet.videoId,
+              packet.chunkIndex,
+              this.currentFrame,
+            );
+          }
+
           // Arrivé au dernier noeud du chemin
           if (packet.currentStepIndex >= packet.path.length - 1) {
             packet.status = "DELIVERED";
           } else {
-            const currentNode = packet.path[packet.currentStepIndex];
             const nextNode = packet.path[packet.currentStepIndex + 1];
             const nextLink = this.getLinkBetweenNodes(currentNode, nextNode);
 
@@ -411,10 +509,8 @@ export class NetworkEngine {
       return this.findPathToOrigin(packet.source);
     }
 
-    const originNode = this.getOriginNode();
-    if (!originNode) return [];
-
-    return this.findPathFromOrigin(originNode, packet.target);
+    // Pour les réponses, on part du nœud source réel (Origin ou cache)
+    return this.findPathFromNode(packet.source, packet.target);
   }
 
   // Trouve un chemin en remontant vers l'ORIGIN
@@ -440,6 +536,17 @@ export class NetworkEngine {
     Logger.debug(`Path from Origin ${originNode.id} vers ${targetNode.id}`);
     const path: NetworkNode[] = [];
     const found = this.depthFirstFindPath(originNode, targetNode, path);
+    return found ? path : [];
+  }
+
+  // Trouve un chemin en descendant depuis n'importe quel nœud jusqu'à la cible
+  findPathFromNode(
+    startNode: NetworkNode,
+    targetNode: NetworkNode,
+  ): NetworkNode[] {
+    Logger.debug(`Path from ${startNode.id} vers ${targetNode.id}`);
+    const path: NetworkNode[] = [];
+    const found = this.depthFirstFindPath(startNode, targetNode, path);
     return found ? path : [];
   }
 
