@@ -54,7 +54,7 @@ function App() {
     >
       <canvas ref={canvasRef} style={{ display: "block" }} />
 
-      {/* Overlay UI (Juste pour vérifier que React marche par dessus) */}
+      {/* Overlay UI */}
       <div
         style={{
           position: "absolute",

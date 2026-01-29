@@ -350,7 +350,7 @@ export class NetworkEngine {
             `Packet ${packet.id} avance au step ${packet.currentStepIndex}`,
           );
 
-          // Arrivé au dernier nœud du chemin
+          // Arrivé au dernier noeud du chemin
           if (packet.currentStepIndex >= packet.path.length - 1) {
             packet.status = "DELIVERED";
           } else {
