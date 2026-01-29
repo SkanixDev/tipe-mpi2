@@ -5,6 +5,9 @@ import {
   FogNode,
   UserNode,
 } from "../model/NetworkNode";
+import type { Link } from "../model/NetworkNode";
+import { Packet } from "../model/Packet";
+import Logger from "../utils/Logger";
 import { NETWORK_CONFIG } from "./config";
 
 export class NetworkEngine {
@@ -22,9 +25,14 @@ export class NetworkEngine {
   lastMouseX: number = 0;
   lastMouseY: number = 0;
 
+  packets: Packet[] = [];
+  frameDurationMs: number = 16.67; // Hypothèse 60 FPS
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
+
+    Logger.info("Initialisation du NetworkEngine");
 
     // Event pour gérer la cam
     this.setupInputs();
@@ -34,10 +42,12 @@ export class NetworkEngine {
 
     // Générer un réseau tout de suite
     this.generateNetworkTree();
+    Logger.info(`Réseau généré (${this.nodes.length} nœuds)`);
   }
 
   // Gestion des inputs pour la caméra
   setupInputs() {
+    Logger.debug("Setup des inputs caméra");
     // 1. Zoom avec la molette
     this.canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
@@ -88,6 +98,7 @@ export class NetworkEngine {
 
   // Adapter la taille du canvas à son conteneur
   resize() {
+    Logger.debug("Resize canvas");
     this.canvas.width =
       this.canvas.parentElement?.clientWidth || window.innerWidth;
     this.canvas.height =
@@ -96,6 +107,7 @@ export class NetworkEngine {
 
   // Création de l'infrastructure réseau (arbre)
   generateNetworkTree() {
+    Logger.info("Génération de la topologie réseau");
     this.nodes = [];
     const width = this.canvas.width * 2;
 
@@ -104,6 +116,7 @@ export class NetworkEngine {
     origin.x = width / 2;
     origin.y = 50;
     this.nodes.push(origin);
+    Logger.debug(`Origin créé: ${origin.id}`);
 
     // 2. CDN
     const numCDNs = NETWORK_CONFIG.CDN.countPerOrigin;
@@ -120,6 +133,7 @@ export class NetworkEngine {
         NETWORK_CONFIG.CDN.options.bandwidthToOrigin,
       );
       this.nodes.push(cdn);
+      Logger.debug(`CDN créé: ${cdn.id}`);
 
       // 3. FOG
       const numFogs = NETWORK_CONFIG.FOG.countPerCDN;
@@ -136,6 +150,7 @@ export class NetworkEngine {
           NETWORK_CONFIG.FOG.options.bandwidthToCDN,
         );
         this.nodes.push(fog);
+        Logger.debug(`Fog créé: ${fog.id}`);
 
         // 4. USERS
         const numUsers = NETWORK_CONFIG.USER.countPerFog;
@@ -153,6 +168,7 @@ export class NetworkEngine {
             NETWORK_CONFIG.USER.options.bandwidthToFog,
           );
           this.nodes.push(user);
+          Logger.debug(`User créé: ${user.id}`);
         }
       }
     }
@@ -162,15 +178,22 @@ export class NetworkEngine {
   start() {
     if (this.isRunning) return;
     this.isRunning = true;
+    Logger.info("Démarrage de la simulation");
     this.animate();
   }
 
   stop() {
     this.isRunning = false;
+    Logger.info("Simulation arrêtée");
   }
 
   animate() {
     if (!this.isRunning) return;
+
+    Logger.debug("Frame render");
+
+    // 0. Mettre à jour la simulation (avant le rendu)
+    this.updatePackets();
 
     // 1. Effacer le canvas
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -220,7 +243,274 @@ export class NetworkEngine {
       this.ctx.fill();
     }
 
+    // 3.1 Dessiner les paquets par-dessus les nœuds
+    for (const packet of this.packets) {
+      if (packet.status !== "TRANSIT") continue;
+
+      const packetPath = packet.path;
+      const currentStepIndex = packet.currentStepIndex;
+      if (packetPath.length < 2 || currentStepIndex >= packetPath.length - 1) {
+        continue;
+      }
+
+      const startNode = packetPath[currentStepIndex];
+      const endNode = packetPath[currentStepIndex + 1];
+
+      const packetPositionX =
+        startNode.x + (endNode.x - startNode.x) * packet.progress;
+      const packetPositionY =
+        startNode.y + (endNode.y - startNode.y) * packet.progress;
+
+      this.ctx.beginPath();
+      this.ctx.arc(packetPositionX, packetPositionY, 4, 0, Math.PI * 2);
+      this.ctx.fillStyle = packet.type === "REQUEST" ? "#f4d03f" : "#ffffff";
+      this.ctx.fill();
+    }
+
     // 4. Prochaine frame
     requestAnimationFrame(() => this.animate());
+  }
+
+  createPacket(packet: Packet) {
+    this.packets.push(packet);
+    Logger.debug(`Packet ajouté: ${packet.id}`);
+  }
+
+  // Helper pour créer une requête depuis un UserNode
+  createRequestFromUser(
+    userNode: UserNode,
+    videoId: string,
+    chunkIndex: number,
+    isLastChunk: boolean = false,
+  ) {
+    const originNode = this.getOriginNode();
+    if (!originNode) {
+      Logger.error("Impossible de créer une requête: Origin introuvable");
+      return;
+    }
+
+    const requestPacket = new Packet(
+      `REQ_${userNode.id}_${videoId}_${chunkIndex}`,
+      "REQUEST",
+      userNode,
+      originNode,
+      videoId,
+      chunkIndex,
+    );
+    requestPacket.isLastChunk = isLastChunk;
+    this.createPacket(requestPacket);
+    Logger.info(
+      `Création de la requête ${requestPacket.id} depuis ${userNode.id}`,
+    );
+  }
+
+  // Met à jour tous les paquets (progression + routage)
+  updatePackets() {
+    Logger.debug(`Mise à jour des paquets (${this.packets.length} au total)`);
+    const activePackets: Packet[] = [];
+    const spawnedPackets: Packet[] = [];
+
+    for (const packet of this.packets) {
+      // 1) Initialiser le chemin si besoin
+      if (packet.status === "QUEUED") {
+        const path = this.buildPathForPacket(packet);
+        Logger.debug(`Path trouvé (${path.length} nœuds) pour ${packet.id}`);
+
+        if (path.length < 2) {
+          packet.status = "DELIVERED";
+          continue;
+        }
+
+        packet.path = path;
+        packet.currentStepIndex = 0;
+        packet.progress = 0;
+        packet.status = "TRANSIT";
+
+        const firstLink = this.getLinkBetweenNodes(path[0], path[1]);
+        if (firstLink) {
+          packet.speed = this.calculateProgressSpeed(firstLink, packet);
+        } else {
+          packet.status = "DELIVERED";
+          continue;
+        }
+      }
+
+      // 2) Avancer le paquet sur le lien actuel
+      if (packet.status === "TRANSIT") {
+        packet.progress += packet.speed;
+        Logger.debug(
+          `Packet ${packet.id} progress=${packet.progress.toFixed(2)}`,
+        );
+
+        // Fin de lien
+        if (packet.progress >= 1) {
+          packet.currentStepIndex += 1;
+          packet.progress = 0;
+          Logger.debug(
+            `Packet ${packet.id} avance au step ${packet.currentStepIndex}`,
+          );
+
+          // Arrivé au dernier nœud du chemin
+          if (packet.currentStepIndex >= packet.path.length - 1) {
+            packet.status = "DELIVERED";
+          } else {
+            const currentNode = packet.path[packet.currentStepIndex];
+            const nextNode = packet.path[packet.currentStepIndex + 1];
+            const nextLink = this.getLinkBetweenNodes(currentNode, nextNode);
+
+            if (nextLink) {
+              packet.speed = this.calculateProgressSpeed(nextLink, packet);
+            } else {
+              packet.status = "DELIVERED";
+            }
+          }
+        }
+      }
+
+      // 3) Traitement à l'arrivée
+      if (packet.status === "DELIVERED") {
+        const deliveredNode =
+          packet.path.length > 0
+            ? packet.path[packet.path.length - 1]
+            : packet.target;
+
+        Logger.info(`Packet livré: ${packet.id} à ${deliveredNode.id}`);
+
+        if (packet.type === "REQUEST" && deliveredNode.type === "ORIGIN") {
+          // Génère une réponse vers l'utilisateur d'origine
+          const responsePacket = new Packet(
+            `RESP_${packet.id}`,
+            "RESPONSE",
+            deliveredNode,
+            packet.source,
+            packet.videoId,
+            packet.chunkIndex,
+          );
+          responsePacket.isLastChunk = packet.isLastChunk;
+          spawnedPackets.push(responsePacket);
+          Logger.info(`Réponse générée: ${responsePacket.id}`);
+        }
+
+        // On ne garde pas le paquet livré
+        continue;
+      }
+
+      activePackets.push(packet);
+    }
+
+    this.packets = activePackets.concat(spawnedPackets);
+    Logger.debug(
+      `Packets actifs: ${activePackets.length}, nouveaux: ${spawnedPackets.length}`,
+    );
+  }
+
+  // Construit le chemin complet pour un paquet
+  buildPathForPacket(packet: Packet): NetworkNode[] {
+    Logger.debug(`Build path pour ${packet.id} (${packet.type})`);
+    if (packet.type === "REQUEST") {
+      return this.findPathToOrigin(packet.source);
+    }
+
+    const originNode = this.getOriginNode();
+    if (!originNode) return [];
+
+    return this.findPathFromOrigin(originNode, packet.target);
+  }
+
+  // Trouve un chemin en remontant vers l'ORIGIN
+  findPathToOrigin(startNode: NetworkNode): NetworkNode[] {
+    Logger.debug(`Path to Origin depuis ${startNode.id}`);
+    const path: NetworkNode[] = [];
+    let currentNode: NetworkNode | null = startNode;
+
+    while (currentNode) {
+      path.push(currentNode);
+      if (currentNode.type === "ORIGIN") break;
+      currentNode = this.getParentCandidate(currentNode);
+    }
+
+    return path;
+  }
+
+  // Trouve un chemin en descendant depuis l'ORIGIN jusqu'à la cible
+  findPathFromOrigin(
+    originNode: NetworkNode,
+    targetNode: NetworkNode,
+  ): NetworkNode[] {
+    Logger.debug(`Path from Origin ${originNode.id} vers ${targetNode.id}`);
+    const path: NetworkNode[] = [];
+    const found = this.depthFirstFindPath(originNode, targetNode, path);
+    return found ? path : [];
+  }
+
+  depthFirstFindPath(
+    currentNode: NetworkNode,
+    targetNode: NetworkNode,
+    path: NetworkNode[],
+  ): boolean {
+    Logger.debug(`DFS at ${currentNode.id}`);
+    path.push(currentNode);
+    if (currentNode === targetNode) return true;
+
+    const children = this.getChildrenOf(currentNode);
+    for (const child of children) {
+      const found = this.depthFirstFindPath(child, targetNode, path);
+      if (found) return true;
+    }
+
+    path.pop();
+    return false;
+  }
+
+  getChildrenOf(parentNode: NetworkNode): NetworkNode[] {
+    Logger.debug(`Recherche enfants de ${parentNode.id}`);
+    return this.nodes.filter(
+      (node) =>
+        node.parent === parentNode ||
+        node.links.some((link) => link.target === parentNode),
+    );
+  }
+
+  // Trouve le parent en se basant sur le champ parent ou sur les liens
+  getParentCandidate(node: NetworkNode): NetworkNode | null {
+    Logger.debug(`Recherche parent de ${node.id}`);
+    if (node.parent) return node.parent;
+
+    const firstLink = node.links[0];
+    return firstLink ? firstLink.target : null;
+  }
+
+  // Récupère un lien (dans un sens ou dans l'autre)
+  getLinkBetweenNodes(
+    startNode: NetworkNode,
+    endNode: NetworkNode,
+  ): Link | null {
+    Logger.debug(`Recherche lien ${startNode.id} -> ${endNode.id}`);
+    const directLink = startNode.links.find((link) => link.target === endNode);
+    if (directLink) return directLink;
+
+    const reverseLink = endNode.links.find((link) => link.target === startNode);
+    if (reverseLink) return reverseLink;
+
+    return null;
+  }
+
+  // Convertit latence + type de paquet en vitesse (progression par frame)
+  calculateProgressSpeed(link: Link, packet: Packet): number {
+    Logger.debug(`Calcul speed pour ${packet.id} (latency=${link.latency}ms)`);
+    const baseTraversalFrames = Math.max(
+      1,
+      link.latency / this.frameDurationMs,
+    );
+    const sizeFactor = packet.type === "REQUEST" ? 1 : 10;
+    const traversalFrames = baseTraversalFrames * sizeFactor;
+
+    return 1 / traversalFrames;
+  }
+
+  getOriginNode(): OriginNode | null {
+    const originNode = this.nodes.find((node) => node.type === "ORIGIN");
+    if (!originNode) Logger.error("Origin introuvable");
+    return originNode ? (originNode as OriginNode) : null;
   }
 }

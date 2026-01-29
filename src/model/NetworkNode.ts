@@ -25,9 +25,10 @@ export abstract class NetworkNode {
     this.type = type;
   }
 
-  connecTo(child: NetworkNode, latency: number, bandwidth: number) {
-    this.links.push({ target: child, latency, bandwidth });
-    child.parent = this;
+  // Relie ce nœud (enfant) à son parent
+  connecTo(parentNode: NetworkNode, latency: number, bandwidth: number) {
+    this.links.push({ target: parentNode, latency, bandwidth });
+    this.parent = parentNode;
   }
 }
 
