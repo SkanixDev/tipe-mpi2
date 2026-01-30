@@ -11,7 +11,7 @@ import Logger from "../utils/Logger";
 import { NETWORK_CONFIG } from "./config";
 
 export class NetworkEngine {
-  // Propriétés du moteur
+  // propriétés canvas
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   nodes: NetworkNode[] = [];
@@ -71,7 +71,7 @@ export class NetworkEngine {
       }
     });
 
-    // 2. Déplacement (Pan) - Clic enfoncé
+    // 2. Déplacement de la cam
     this.canvas.addEventListener("mousedown", (e) => {
       this.isDragging = true;
       this.lastMouseX = e.offsetX;
@@ -248,7 +248,7 @@ export class NetworkEngine {
       this.ctx.fill();
     }
 
-    // 3.1 Dessiner les paquets par-dessus les nœuds
+    // 3.1 Dessiner les paquets
     for (const packet of this.packets) {
       if (packet.status !== "TRANSIT") continue;
 
@@ -348,7 +348,7 @@ export class NetworkEngine {
   updatePackets() {
     Logger.debug(`Mise à jour des paquets (${this.packets.length} au total)`);
     const activePackets: Packet[] = [];
-    const spawnedPackets: Packet[] = [];
+    const spawnedPackets: Packet[] = []; // Nouveaux paquets générés
 
     for (const packet of this.packets) {
       // 1) Initialiser le chemin si besoin
@@ -426,7 +426,7 @@ export class NetworkEngine {
               packet.path = [currentNode];
               packet.currentStepIndex = 0;
               packet.target = currentNode;
-              // On ne garde pas ce paquet (il est terminé)
+              // On ne garde pas ce paquet
               continue;
             } else {
               // CACHE MISS : continue vers le parent²
@@ -475,7 +475,7 @@ export class NetworkEngine {
         Logger.info(`Packet livré: ${packet.id} à ${deliveredNode.id}`);
 
         if (packet.type === "REQUEST" && deliveredNode.type === "ORIGIN") {
-          // Génère une réponse vers l'utilisateur d'origine
+          // Request de l'origin vers l'utilisateur
           const responsePacket = new Packet(
             `RESP_${packet.id}`,
             "RESPONSE",
@@ -489,7 +489,7 @@ export class NetworkEngine {
           Logger.info(`Réponse générée: ${responsePacket.id}`);
         }
 
-        // On ne garde pas le paquet livré
+        // on le retire des packets actifs
         continue;
       }
 
@@ -555,7 +555,7 @@ export class NetworkEngine {
     targetNode: NetworkNode,
     path: NetworkNode[],
   ): boolean {
-    Logger.debug(`DFS at ${currentNode.id}`);
+    Logger.debug(`DFS a ${currentNode.id}`);
     path.push(currentNode);
     if (currentNode === targetNode) return true;
 

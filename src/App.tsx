@@ -72,7 +72,7 @@ function App() {
       window.removeEventListener("resize", handleResize);
       engine.stop();
     };
-  }, []);
+  }, [speedMultiplier]);
 
   useEffect(() => {
     const engine = engineRef.current;
