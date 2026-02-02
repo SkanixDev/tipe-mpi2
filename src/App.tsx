@@ -10,6 +10,8 @@ function App() {
   const engineRef = useRef<NetworkEngine | null>(null);
   const [speedMultiplier, setSpeedMultiplier] = useState(0.3);
   const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
+  const [zipfAlpha, setZipfAlpha] = useState(1.0);
+  const [zipfVideoCount, setZipfVideoCount] = useState(100);
 
   const handleRequest = () => {
     const engine = engineRef.current;
@@ -24,6 +26,9 @@ function App() {
     engine.createRequestFromUser(firstUserNode, "video1", 0, false);
   };
 
+  const handleLogModeToggle = () => {
+    Logger.toggleDebug(!Logger.isDebugMode);
+  };
   // 🎯 Test Cache : 2 users regardent la même vidéo
   const handleCacheTest = () => {
     const engine = engineRef.current;
@@ -48,6 +53,21 @@ function App() {
       );
       engine.createRequestFromUser(user2, "Matrix", 0, false);
     }, 2000);
+  };
+
+  const handleZipfBurst = () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    engine.setZipfParameters(zipfVideoCount, zipfAlpha);
+    const burstSize = 20;
+    const burstIntervalMs = 60;
+
+    for (let index = 0; index < burstSize; index += 1) {
+      setTimeout(() => {
+        engine.createZipfRequestFromRandomUser(0);
+      }, index * burstIntervalMs);
+    }
   };
 
   useEffect(() => {
@@ -119,7 +139,7 @@ function App() {
           borderRadius: "5px",
         }}
       >
-        <h2>TIPE - Phase 3A : Cache</h2>
+        <h2>TIPE - Phase 3B : Zipf</h2>
         <button
           onClick={handleRequest}
           style={{ marginBottom: "10px", display: "block" }}
@@ -147,6 +167,44 @@ function App() {
           onChange={(e) => setSpeedMultiplier(Number(e.target.value))}
           style={{ width: "200px" }}
         />
+
+        <div style={{ marginTop: "12px", fontSize: "12px" }}>
+          <strong>Générateur Zipf</strong>
+          <div style={{ marginTop: "6px" }}>
+            <label style={{ display: "block", marginBottom: "4px" }}>
+              Nombre de vidéos
+            </label>
+            <input
+              type="number"
+              min="10"
+              max="1000"
+              step="10"
+              value={zipfVideoCount}
+              onChange={(e) => setZipfVideoCount(Number(e.target.value))}
+              style={{ width: "100%" }}
+            />
+          </div>
+          <div style={{ marginTop: "8px" }}>
+            <label style={{ display: "block", marginBottom: "4px" }}>
+              Alpha (pente Zipf)
+            </label>
+            <input
+              type="number"
+              min="0.1"
+              max="2"
+              step="0.1"
+              value={zipfAlpha}
+              onChange={(e) => setZipfAlpha(Number(e.target.value))}
+              style={{ width: "100%" }}
+            />
+          </div>
+          <button
+            onClick={handleZipfBurst}
+            style={{ marginTop: "8px", display: "block", width: "100%" }}
+          >
+            🎲 Burst Zipf (20 requêtes)
+          </button>
+        </div>
 
         <div style={{ marginTop: "12px", fontSize: "12px" }}>
           <strong>Node sélectionné :</strong>
@@ -177,6 +235,12 @@ function App() {
             </div>
           )}
         </div>
+        <button
+          onClick={handleLogModeToggle}
+          style={{ marginTop: "10px", display: "block" }}
+        >
+          Mode Log: {Logger.isDebugMode ? "DEBUG" : "INFO"}
+        </button>
       </div>
     </div>
   );

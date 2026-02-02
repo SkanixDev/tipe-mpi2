@@ -9,6 +9,7 @@ import type { Link } from "../model/NetworkNode";
 import { Packet } from "../model/Packet";
 import Logger from "../utils/Logger";
 import { NETWORK_CONFIG } from "./config";
+import { VideoRequestGenerator } from "./VideoRequestGenerator";
 
 export class NetworkEngine {
   // propriétés canvas
@@ -29,10 +30,12 @@ export class NetworkEngine {
   frameDurationMs: number = 16.67; // Hypothèse 60 FPS
   currentFrame: number = 0; // Compteur de frames pour les timestamps
   speedMultiplier: number = 0.3; // Ralentit la simulation pour mieux voir
+  zipfGenerator: VideoRequestGenerator;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
+    this.zipfGenerator = new VideoRequestGenerator(100, 0.1);
 
     Logger.info("Initialisation du NetworkEngine");
 
@@ -287,6 +290,13 @@ export class NetworkEngine {
     Logger.info(`Vitesse simulation: x${this.speedMultiplier.toFixed(2)}`);
   }
 
+  setZipfParameters(numVideos: number, alpha: number) {
+    this.zipfGenerator.updateParameters(numVideos, alpha);
+    Logger.info(
+      `Zipf configuré: ${numVideos} vidéos, alpha=${alpha.toFixed(2)}`,
+    );
+  }
+
   // Retourne le nœud cliqué à partir des coordonnées écran // J AI FAIT PAR IA CAR PAS INTERESSANT
   getNodeAtScreenPosition(
     screenX: number,
@@ -342,6 +352,28 @@ export class NetworkEngine {
     Logger.info(
       `Création de la requête ${requestPacket.id} depuis ${userNode.id}`,
     );
+  }
+
+  createZipfRequestFromRandomUser(chunkIndex: number = 0) {
+    const randomUser = this.getRandomUserNode();
+    if (!randomUser) {
+      Logger.error("Impossible de créer une requête Zipf: aucun user trouvé");
+      return;
+    }
+
+    const videoId = this.zipfGenerator.getRandomVideoId();
+    this.createRequestFromUser(randomUser, videoId, chunkIndex, false);
+    Logger.info(`Requête Zipf: ${randomUser.id} -> ${videoId}_${chunkIndex}`);
+  }
+
+  private getRandomUserNode(): UserNode | null {
+    const userNodes = this.nodes.filter(
+      (node): node is UserNode => node instanceof UserNode,
+    );
+
+    if (userNodes.length === 0) return null;
+    const randomIndex = Math.floor(Math.random() * userNodes.length);
+    return userNodes[randomIndex];
   }
 
   // Met à jour tous les paquets (progression + routage)

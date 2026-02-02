@@ -1,6 +1,6 @@
 class Logger {
   // Le flag est statique : il est partagé par toute l'application
-  static isDebugMode = false;
+  static isDebugMode = true;
 
   /**
    * Active ou désactive le mode debug
